@@ -1,10 +1,43 @@
 """Lớp dữ liệu: SQLite + các hàm thao tác. Mọi trang trong app đều đọc/ghi qua file này."""
 import sqlite3
 from contextlib import contextmanager
+from contextvars import ContextVar
+import tempfile
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "creatorflow.db"
+SESSION_DIR = Path(tempfile.gettempdir()) / "creatorflow_sessions"
+
+# Mỗi luồng (mỗi người truy cập) có thể trỏ tới CSDL riêng của mình
+_PATH = ContextVar("creatorflow_db_path", default=None)
+
+
+def current_path():
+    return _PATH.get() or DB_PATH
+
+
+def use_path(path):
+    _PATH.set(Path(path))
+
+
+def session_path(sid):
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    return SESSION_DIR / f"{sid}.db"
+
+
+def cleanup_sessions(max_age_hours=72):
+    """Xóa CSDL phiên không còn được dùng."""
+    if not SESSION_DIR.exists():
+        return
+    limit = time.time() - max_age_hours * 3600
+    for f in SESSION_DIR.glob("*.db"):
+        try:
+            if f.stat().st_mtime < limit:
+                f.unlink()
+        except OSError:
+            pass
 
 # ---------- Trạng thái vòng đời ----------
 STATUS_LABEL = {
@@ -42,7 +75,7 @@ SOURCE_TYPES = ["Content Creator", "Affiliate Marketer", "Freelancer", "Hợp đ
 @contextmanager
 def conn():
     """Mở kết nối, tự commit khi xong và LUÔN đóng (quan trọng trên Windows)."""
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(current_path())
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     try:

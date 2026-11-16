@@ -2,6 +2,10 @@
 Chạy:  streamlit run app.py"""
 import io
 import json
+import os
+import re
+import uuid
+from pathlib import Path
 from datetime import date, timedelta
 
 import pandas as pd
@@ -14,10 +18,9 @@ from db import STATUS_LABEL, TRANSITIONS
 from services import vnd
 
 st.set_page_config(page_title="CreatorFlow", page_icon="💸", layout="wide")
-db.init_db()
 
 PAGES = ["📊 Dashboard", "🗂️ Nguồn thu", "💰 Quản lý khoản thu", "⏳ Theo dõi thanh toán",
-         "🏦 Đối soát", "📈 Báo cáo"]
+         "🏦 Đối soát", "📈 Báo cáo", "ℹ️ Hướng dẫn"]
 STATUS_COLORS = {
     "Phát sinh doanh thu": "#94a3b8", "Chờ xác nhận / nghiệm thu": "#f59e0b", "Được duyệt": "#3b82f6",
     "Chờ thanh toán": "#6366f1", "Đã thanh toán / chờ đối soát": "#06b6d4", "Đã nhận & đối soát": "#10b981",
@@ -137,6 +140,38 @@ def page_dashboard():
         fig2 = px.pie(s, names="trang_thai", values="amount", hole=0.45, title="Cơ cấu theo trạng thái",
                       color="trang_thai", color_discrete_map=STATUS_COLORS)
         st.plotly_chart(fig2)
+
+    bd = sv.bank_df()
+    n_rev = int(bd["match_status"].isin(["REVIEW", "UNMATCHED"]).sum()) if not bd.empty else 0
+    if n_rev:
+        st.info(f"🏦 Có **{n_rev} giao dịch ngân hàng** cần bạn kiểm tra ở trang *Đối soát*.")
+
+    st.subheader("Dòng tiền dự kiến sẽ về")
+    w = df[df["status"].isin(db.WAITING_PAY_SET)].copy()
+    w["remaining"] = w["amount"] - w["received_amount"]
+    w = w[w["remaining"] > 0]
+    if w.empty:
+        st.caption("Không có khoản nào đang chờ tiền về.")
+    else:
+        days = (pd.to_datetime(w["expected_pay_date"]) - pd.Timestamp(date.today())).dt.days
+
+        def week_idx(d):
+            return -1 if d < 0 else (6 if d >= 42 else d // 7)
+
+        def week_label(k):
+            if k == -1:
+                return "Đã quá hạn"
+            if k == 6:
+                return "Sau 6 tuần"
+            return f"Tuần từ {(date.today() + timedelta(days=k * 7)):%d/%m}"
+        ks = sorted(set(days.map(week_idx)))
+        w["Thời điểm"] = days.map(lambda d: week_label(week_idx(d)))
+        order = [week_label(k) for k in ks]
+        cf = w.groupby("Thời điểm", as_index=False)["remaining"].sum()
+        figc = px.bar(cf, x="Thời điểm", y="remaining", labels={"remaining": "Số tiền còn phải thu (VND)"},
+                      category_orders={"Thời điểm": order}, color_discrete_sequence=["#6366f1"],
+                      title="Tiền dự kiến về theo tuần (theo hạn thanh toán)")
+        st.plotly_chart(figc)
 
     st.subheader("Khoản thu gần đến hạn / đã trễ hạn")
     due = df[df["status"].isin(db.WAITING_PAY_SET)].copy()
@@ -314,10 +349,11 @@ def page_incomes():
 
 def import_section(srcs):
     st.subheader("A. Lấy dữ liệu từ API giả lập")
-    if not sv.ensure_api():
-        st.error("Không kết nối được API giả lập. Thử chạy riêng: `uvicorn mock_api:app --port 8008`")
+    if sv.ensure_api():
+        st.caption(f"API giả lập đang chạy tại {sv.API_BASE}  (tài liệu API: {sv.API_BASE}/docs)")
     else:
-        st.caption(f"API giả lập đang chạy tại {sv.API_BASE}  (xem tài liệu: {sv.API_BASE}/docs)")
+        st.caption("API giả lập đang chạy ở chế độ nội bộ.")
+    if True:
         c1, c2, c3 = st.columns([2, 2, 1])
         plat = c1.selectbox("Nền tảng", list(sv.PLATFORMS), key="api_plat")
         rnd = c2.checkbox("Tạo dữ liệu mới ngẫu nhiên (để thử nhập nhiều lần)", key="api_rnd")
@@ -347,6 +383,12 @@ def import_section(srcs):
 
     st.divider()
     st.subheader("B. Tải file Excel / CSV")
+    with st.expander("📎 Chưa có file? Tải file mẫu về để thử"):
+        files = sv.sample_files()
+        cc = st.columns(2)
+        for col, name in zip(cc, ["tiktok_revenue.csv", "freelancer_projects.xlsx"]):
+            col.download_button(f"⬇️ {name}", files[name][0], name, files[name][1], key=f"dl_{name}")
+        st.caption("Tải về rồi chọn lại ở ô bên dưới. Nhớ gán đúng nguồn thu (TikTok Affiliate / Freelancer).")
     up = st.file_uploader("Chọn file doanh thu (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="inc_file")
     if up:
         try:
@@ -376,7 +418,6 @@ def import_section(srcs):
             flash(f"Đã nhập {a} khoản thu" + (f", bỏ qua {d} khoản trùng mã" if d else "") +
                   (f", {b} dòng lỗi ({'; '.join(errs)})" if b else "") + ".", "success" if a else "warning")
             st.rerun()
-    st.caption("File mẫu nằm trong thư mục `sample_data/` (tiktok_revenue.csv, freelancer_projects.xlsx).")
 
 
 # ---------- Trang 4: Theo dõi thanh toán ----------
@@ -425,7 +466,19 @@ def page_recon():
     tabs = st.tabs(["1️⃣ Tải sao kê", "2️⃣ Đối soát tự động", "3️⃣ Cần kiểm tra", "📜 Lịch sử đối soát"])
 
     with tabs[0]:
-        up = st.file_uploader("Tải sao kê ngân hàng (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="bank_file")
+        cs = st.columns([2, 2, 3])
+        if cs[0].button("🧪 Dùng sao kê mẫu", key="use_sample_bank",
+                        help="Nạp nhanh 6 giao dịch mẫu (khớp với dữ liệu mẫu) để thử đối soát"):
+            bdf = sv.sample_bank_df()
+            a, d, s_ = sv.import_bank_rows(bdf, dict(txn_date="Ngày giao dịch", amount="Ghi có",
+                                                     description="Nội dung giao dịch"))
+            flash(f"Đã nạp {a} giao dịch tiền vào từ sao kê mẫu" + (f" (bỏ qua {d} dòng trùng)" if d else "") +
+                  ". Sang bước 2 để đối soát.")
+            st.rerun()
+        cs[1].download_button("⬇️ Tải sao kê mẫu (CSV)", sv.sample_files()["bank_statement.csv"][0],
+                              "bank_statement.csv", "text/csv", key="dl_bank")
+        cs[2].caption("Sao kê mẫu dùng với **dữ liệu mẫu** (khớp các mã YT001, FR001, TI002...).")
+        up = st.file_uploader("Hoặc tải sao kê của bạn (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="bank_file")
         if up:
             try:
                 df = sv.read_table(up)
@@ -620,25 +673,105 @@ def page_reports():
                        f"khoan_thu_{date.today()}.csv", "text/csv")
 
 
+# ---------- Trang hướng dẫn ----------
+def page_guide():
+    st.title("ℹ️ Giới thiệu & hướng dẫn demo")
+    st.markdown("""
+**CreatorFlow** là nền tảng Fintech giúp người làm việc trong nền kinh tế số (**Content Creator, Affiliate Marketer,
+Freelancer**) quản lý tập trung thu nhập từ nhiều nền tảng, theo dõi **toàn bộ vòng đời** của từng khoản thu và
+**tự động đối soát** với sao kê ngân hàng. Báo cáo không chỉ cho biết kiếm được bao nhiêu mà còn cho biết
+*khoản nào thực sự đã về tài khoản*.
+
+> CreatorFlow **không** phải ví điện tử, cổng thanh toán hay ngân hàng số: hệ thống không giữ tiền và không chuyển tiền.
+""")
+    st.subheader("Vòng đời của một khoản thu")
+    st.graphviz_chart("""
+digraph G { rankdir=LR; bgcolor="transparent";
+ node [shape=box, style="rounded,filled", fillcolor="#eef2ff", color="#6366f1", fontname="Arial", fontsize=11];
+ edge [color="#64748b"];
+ A [label="Phát sinh\nGENERATED"]; B [label="Chờ xác nhận\nUNDER_REVIEW"]; C [label="Được duyệt\nAPPROVED"];
+ D [label="Chờ thanh toán\nPENDING_PAYMENT"]; E [label="Đã thanh toán\nPAID_UNRECONCILED"];
+ F [label="Đã nhận & đối soát\nRECONCILED", fillcolor="#d1fae5", color="#10b981"];
+ X [label="Trễ hạn / Một phần /\nTranh chấp / Hủy", fillcolor="#fee2e2", color="#ef4444"];
+ A -> B -> C -> D -> E -> F; A -> C; D -> X; E -> X [style=dashed]; }
+""")
+    c = st.columns(2)
+    with c[0]:
+        st.subheader("4 nghiệp vụ Fintech")
+        st.markdown("""
+1. **Tổng hợp & chuẩn hóa** dữ liệu thu nhập (API giả lập + Excel/CSV; mỗi nền tảng một tên trường, một đơn vị).
+2. **Quản lý công nợ phải thu** và trạng thái thanh toán, có lịch sử thay đổi.
+3. **Đối soát tự động** với sao kê; thiếu tiền/nhiều ứng viên → người dùng quyết định, tránh xác nhận sai.
+4. **Phân tích & báo cáo** theo nguồn, thời gian, trạng thái; nền tảng nào trả chậm.
+""")
+    with c[1]:
+        st.subheader("Kịch bản demo gợi ý")
+        st.markdown("""
+1. *Nguồn thu*: thêm một nguồn mới.
+2. *Quản lý khoản thu → Nhập dữ liệu*: gọi API YouTube, tải file TikTok, thêm tay một khoản Freelancer.
+3. *Chi tiết & trạng thái*: chuyển khoản thu qua các trạng thái, xem lịch sử.
+4. *Đối soát*: bấm **Dùng sao kê mẫu** → **Chạy đối soát tự động** → xử lý mục *Cần kiểm tra*.
+5. *Dashboard & Báo cáo*: xem tiền thực nhận, dòng tiền dự kiến, xuất Excel.
+""")
+    st.info("💡 Doanh thu phát sinh, thu nhập được duyệt, khoản đến hạn và tiền thực nhận là **bốn thông tin khác nhau**, "
+            "không cộng dồn thành một con số doanh thu để tránh tính trùng.")
+    st.caption("Công nghệ: Python · Streamlit · SQLite · Pandas · Plotly · FastAPI · Requests. "
+               "Chưa triển khai: kết nối API nền tảng thật và ngân hàng thật (định hướng phát triển).")
+
+
+# ---------- Phiên làm việc riêng cho từng người truy cập ----------
+def is_isolated():
+    mode = os.environ.get("CREATORFLOW_MODE", "").lower()
+    if mode in ("isolated", "local"):
+        return mode == "isolated"
+    return str(Path(__file__).resolve()).startswith("/mount/src")  # chạy trên Streamlit Cloud
+
+
+def setup_session():
+    if not is_isolated():
+        db.init_db()
+        return None
+    sid = st.query_params.get("s", "")
+    if not re.fullmatch(r"[A-Za-z0-9]{6,32}", sid or ""):
+        sid = uuid.uuid4().hex[:10]
+        st.query_params["s"] = sid
+    if not st.session_state.get("_cleaned"):
+        db.cleanup_sessions()
+        st.session_state["_cleaned"] = True
+    db.use_path(db.session_path(sid))
+    db.init_db()
+    return sid
+
+
 # ---------- Điều hướng ----------
 def main():
+    sid = setup_session()
     with st.sidebar:
         st.markdown("## 💸 CreatorFlow")
         st.caption("Quản lý & đối soát vòng đời thu nhập đa nền tảng")
         page = st.radio("Điều hướng", PAGES, label_visibility="collapsed")
         st.divider()
         with st.expander("⚙️ Dữ liệu"):
-            if st.button("Khôi phục dữ liệu mẫu"):
+            if sid:
+                st.caption(f"🔒 Bạn đang dùng **phiên riêng** (mã `{sid}`): dữ liệu của bạn không ảnh hưởng người khác "
+                           "và giữ nguyên khi tải lại trang. Muốn người khác xem **cùng dữ liệu**, gửi cho họ "
+                           "đúng link đang hiện trên thanh địa chỉ (có đuôi `?s=...`).")
+            ok = st.checkbox("Tôi hiểu dữ liệu hiện tại sẽ bị thay thế", key="reset_ok")
+            if st.button("Khôi phục dữ liệu mẫu", disabled=not ok):
                 db.reset_all(True)
                 flash("Đã khôi phục dữ liệu mẫu.")
                 st.rerun()
-            if st.button("Xóa toàn bộ dữ liệu (làm mới hoàn toàn)"):
+            if st.button("Xóa toàn bộ dữ liệu (làm mới hoàn toàn)", disabled=not ok):
                 db.reset_all(False)
                 flash("Đã xóa toàn bộ dữ liệu. Hãy tạo nguồn thu mới.", "warning")
                 st.rerun()
+            if sid and st.button("🆕 Mở phiên mới (dữ liệu mẫu mới)"):
+                st.query_params.clear()
+                st.rerun()
     show_flash()
     {"📊 Dashboard": page_dashboard, "🗂️ Nguồn thu": page_sources, "💰 Quản lý khoản thu": page_incomes,
-     "⏳ Theo dõi thanh toán": page_payments, "🏦 Đối soát": page_recon, "📈 Báo cáo": page_reports}[page]()
+     "⏳ Theo dõi thanh toán": page_payments, "🏦 Đối soát": page_recon, "📈 Báo cáo": page_reports,
+     "ℹ️ Hướng dẫn": page_guide}[page]()
 
 
 main()

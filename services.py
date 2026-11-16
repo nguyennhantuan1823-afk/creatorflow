@@ -63,11 +63,23 @@ PLATFORMS = {
 }
 
 
+def _call_local(name, random_data, n):
+    """Dự phòng: nếu không gọi được API qua mạng nội bộ thì gọi thẳng hàm của API giả lập."""
+    import mock_api
+    fn = {"YouTube": mock_api.youtube, "TikTok Affiliate": mock_api.tiktok,
+          "Facebook": mock_api.facebook, "Freelancer": mock_api.freelancer}[name]
+    return fn(random_data=random_data, n=n)
+
+
 def fetch_platform(name, random_data=False, n=2):
     cfg = PLATFORMS[name]
-    r = requests.get(API_BASE + cfg["endpoint"], params={"random_data": random_data, "n": n}, timeout=5)
-    r.raise_for_status()
-    raw = r.json()[cfg["list_key"]]
+    try:
+        r = requests.get(API_BASE + cfg["endpoint"], params={"random_data": random_data, "n": n}, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        data = _call_local(name, random_data, n)
+    raw = data[cfg["list_key"]]
     out = []
     for it in raw:  # chuẩn hóa về 1 cấu trúc
         out.append(dict(
@@ -370,3 +382,38 @@ def import_bank_rows(df, colmap):
         existing.add(key)
         added += 1
     return added, dup, skipped
+
+
+# ---------- File mẫu (ngày luôn tính theo hôm nay) ----------
+def sample_bank_df():
+    f = lambda n: (date.today() - pd.Timedelta(days=n)).strftime("%d/%m/%Y")
+    return pd.DataFrame([
+        [f(0), "", "8.000.000", "GOOGLE ADSENSE YT001 THANH TOAN"],
+        [f(0), "", "3.000.000", "CK FREELANCER FR001 TAT TOAN"],
+        [f(0), "", "3.104.000", "TIKTOK SHOP TI002 (da tru phi)"],
+        [f(0), "", "6.000.000", "FREELANCER thanh toan du an"],
+        [f(1), "250.000", "", "THANH TOAN HOA DON DIEN"],
+        [f(1), "", "500.000", "CHUYEN KHOAN TIEN AN"],
+    ], columns=["Ngày giao dịch", "Ghi nợ", "Ghi có", "Nội dung giao dịch"])
+
+
+def sample_files():
+    """Trả về {tên file: (bytes, mime)} để người dùng tải về thử chức năng nhập file."""
+    import io
+    f = lambda n: (date.today() - pd.Timedelta(days=n)).strftime("%d/%m/%Y")
+    tiktok = pd.DataFrame([["TT-F-001", f(6), "4.000.000", "Hoa hồng đợt 1 tháng này"],
+                           ["TT-F-002", f(3), "1.350.000", "Hoa hồng đợt 2"],
+                           ["TT-F-003", f(1), "2.800.000", "Hoa hồng livestream"]],
+                          columns=["Mã đơn", "Ngày", "Hoa hồng", "Nội dung"])
+    fl = pd.DataFrame([["PRJ-101", date.today() - pd.Timedelta(days=4), 6_000_000, "Dự án thiết kế banner"],
+                       ["PRJ-102", date.today() - pd.Timedelta(days=2), 3_500_000, "Viết kịch bản video"]],
+                      columns=["Mã dự án", "Ngày nghiệm thu", "Số tiền", "Nội dung"])
+    xb = io.BytesIO()
+    with pd.ExcelWriter(xb, engine="openpyxl") as xw:
+        fl.to_excel(xw, sheet_name="Dự án", index=False)
+    enc = lambda d: d.to_csv(index=False).encode("utf-8-sig")
+    return {
+        "tiktok_revenue.csv": (enc(tiktok), "text/csv"),
+        "freelancer_projects.xlsx": (xb.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "bank_statement.csv": (enc(sample_bank_df()), "text/csv"),
+    }

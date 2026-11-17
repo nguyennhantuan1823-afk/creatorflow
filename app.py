@@ -147,105 +147,123 @@ def cashflow_chart(df):
                  labels={"remaining": "Triệu đồng"})
     fig.update_traces(hovertemplate="%{x}<br><b>%{y:,.2f} triệu đồng</b> dự kiến về<extra></extra>")
     fig.update_layout(bargap=0.35, showlegend=False)
-    st.plotly_chart(ui.style_fig(fig, "Tiền dự kiến sẽ về theo tuần"))
+    st.plotly_chart(ui.style_fig(fig))
 
 
 def todo_panel(df_all):
     bd = sv.bank_df()
     n_bank = int(bd["match_status"].isin(["REVIEW", "UNMATCHED"]).sum()) if not bd.empty else 0
     items = [
-        (int((df_all["status"] == "OVERDUE").sum()), "🔴 khoản **trễ hạn** thanh toán", P_PAY),
-        (int((df_all["status"] == "PAID_UNRECONCILED").sum()), "🔷 khoản chờ **đối soát** với sao kê", P_REC),
-        (n_bank, "🏦 giao dịch ngân hàng cần **kiểm tra**", P_REC),
-        (int((df_all["status"] == "APPROVED").sum()), "🔵 khoản đã duyệt, chưa chuyển **chờ thanh toán**", P_PAY),
-        (int((df_all["status"] == "UNDER_REVIEW").sum()), "🟡 khoản đang **chờ xác nhận** từ nền tảng/khách", P_INC),
+        (int((df_all["status"] == "OVERDUE").sum()), "khoản <b>trễ hạn</b> thanh toán", P_PAY),
+        (int((df_all["status"] == "PAID_UNRECONCILED").sum()), "khoản chờ <b>đối soát</b> với sao kê", P_REC),
+        (n_bank, "giao dịch ngân hàng cần <b>kiểm tra</b>", P_REC),
+        (int((df_all["status"] == "APPROVED").sum()), "khoản đã duyệt, chưa chuyển sang <b>chờ thanh toán</b>", P_PAY),
+        (int((df_all["status"] == "UNDER_REVIEW").sum()), "khoản đang <b>chờ xác nhận</b> từ nền tảng/khách", P_INC),
     ]
     items = [i for i in items if i[0] > 0]
     if not items:
         st.success("Mọi thứ đã gọn gàng, không có việc tồn đọng.", icon="🎉")
         return
     for n, (cnt, text, page) in enumerate(items):
-        a, b, c = st.columns([0.7, 4.3, 1.6])
-        a.markdown(f"### {cnt}")
-        b.markdown(f"<div style='padding-top:10px'>{text}</div>", unsafe_allow_html=True)
-        c.button("Xử lý ›", key=f"todo_{n}", on_click=go, args=(page,))
+        a, b, c = st.columns([0.6, 2.8, 1.6], vertical_alignment="center")
+        a.markdown(f'<div class="cf-todo" style="border:0"><span class="n">{cnt}</span></div>', unsafe_allow_html=True)
+        b.markdown(f'<div style="font-size:.93rem;line-height:1.35">{text}</div>', unsafe_allow_html=True)
+        c.button("Xử lý", key=f"todo_{n}", on_click=go, args=(page,))
+
+
+def intro_banner():
+    with st.container(border=True):
+        a, b, c = st.columns([7, 1.7, 0.8], vertical_alignment="center")
+        a.markdown("👋 **Mới dùng?** Chỉ cần 3 bước: **① Thêm khoản thu** (trang Khoản thu) → **② Theo dõi thanh toán** "
+                   "→ **③ Đối soát với sao kê**. Các con số bên dưới tự cập nhật theo từng bước.")
+        b.button("Xem hướng dẫn", on_click=go, args=(P_GUIDE,), key="intro_guide")
+        c.button("Ẩn", key="intro_hide", on_click=lambda: st.session_state.update(hide_intro=True))
+
+
+def chart_controls(prefix, with_split=False):
+    """Hàng điều khiển nhỏ đặt ngay phía trên biểu đồ mà nó điều chỉnh."""
+    n = 4 if with_split else 3
+    c = st.columns([2, 3.6, 1.8, 1.7][:n], vertical_alignment="bottom")
+    metric = c[0].selectbox("Chỉ số", sv.METRICS, key=f"{prefix}_metric")
+    return metric, c
 
 
 def page_dashboard():
-    ui.hero("📊", "Tổng quan thu nhập",
-            "Tiền bạn đã kiếm, tiền đang chờ về và tiền thực sự đã vào tài khoản, gói gọn trong một màn hình.")
+    ui.hero("", "Tổng quan thu nhập", "Tiền bạn đã kiếm, tiền đang chờ về và tiền thật sự đã vào tài khoản.")
     df_all = sv.income_df()
     if df_all.empty:
         st.info("Chưa có khoản thu nào. Vào **💰 Khoản thu** để thêm hoặc nhập dữ liệu, "
                 "hoặc bấm *Khôi phục dữ liệu mẫu* ở thanh bên.", icon="👋")
         return
+    if not st.session_state.get("hide_intro"):
+        intro_banner()
 
-    with st.container(border=True):
-        st.markdown("**🎛️ Bộ lọc** — chọn xong là số liệu và biểu đồ cập nhật ngay")
-        c = st.columns([1.1, 1.8, 1.8])
-        period = c[0].selectbox("📅 Kỳ xem", sv.PERIODS, key="d_period")
-        sources = c[1].multiselect("🗂️ Nguồn thu", sorted(df_all["source"].unique()), key="d_src",
-                                   placeholder="Tất cả nguồn")
-        status_f = c[2].multiselect("🏷️ Trạng thái", list(STATUS_LABEL), format_func=status_txt, key="d_st",
-                                    placeholder="Tất cả trạng thái")
-        custom = None
-        if period == "Tùy chọn":
-            custom = st.date_input("Chọn khoảng ngày", (date.today() - timedelta(days=30), date.today()),
-                                   format="DD/MM/YYYY", key="d_custom")
-        c2 = st.columns([1.6, 1.3, 1, 1.4])
-        metric = c2[0].selectbox("📐 Chỉ số trên biểu đồ", sv.METRICS, key="d_metric")
-        group = c2[1].selectbox("🧩 Nhóm theo", GROUPS, key="d_group")
-        kind = c2[2].selectbox("📊 Kiểu", KINDS, key="d_kind")
-        c2[3].write("")
-        split = c2[3].toggle("Chia màu theo nguồn", value=True, key="d_split")
-
+    # Bộ lọc gọn: chỉ 2 ô, đặt ngay dưới tiêu đề
+    c = st.columns([3, 1.5, 2.2], vertical_alignment="center")
+    c[0].markdown(f'<div class="cf-asof">Số liệu tính đến <b>{date.today():%d/%m/%Y}</b></div>', unsafe_allow_html=True)
+    period = c[1].selectbox("Kỳ xem", sv.PERIODS, key="d_period", format_func=lambda p: f"Kỳ xem: {p}",
+                            label_visibility="collapsed")
+    sources = c[2].multiselect("Nguồn thu", sorted(df_all["source"].unique()), key="d_src",
+                               placeholder="Tất cả nguồn thu", label_visibility="collapsed")
+    custom = None
+    if period == "Tùy chọn":
+        custom = st.date_input("Chọn khoảng ngày", (date.today() - timedelta(days=30), date.today()),
+                               format="DD/MM/YYYY", key="d_custom")
     start, end = sv.period_range(period, custom)
-    df = sv.filter_df(df_all, start, end, sources, status_f)
+    df = sv.filter_df(df_all, start, end, sources)
     k = sv.kpis(df)
     ps, pe = sv.prev_period(start, end)
-    kp = sv.kpis(sv.filter_df(df_all, ps, pe, sources, status_f)) if ps else None
+    kp = sv.kpis(sv.filter_df(df_all, ps, pe, sources)) if ps else None
 
+    # 1) KPI ở trên cùng
     cols = st.columns(5)
-    ui.kpi(cols[0], "Doanh thu phát sinh", vnd(k["generated"]), "Mọi khoản đã ghi nhận", "#6366f1",
+    ui.kpi(cols[0], "Doanh thu phát sinh", vnd(k["generated"]), "Tổng các khoản đã ghi nhận", None,
            ui.pct_change(k["generated"], kp["generated"]) if kp else None)
-    ui.kpi(cols[1], "Thu nhập được duyệt", vnd(k["approved"]), "Đã được xác nhận sẽ trả", "#3b82f6")
-    ui.kpi(cols[2], "Còn chờ thanh toán", vnd(k["waiting"]), "Đã duyệt nhưng tiền chưa về", "#f59e0b")
-    ui.kpi(cols[3], "Chờ đối soát", vnd(k["unreconciled"]), "Nền tảng báo đã trả, chưa khớp sao kê", "#06b6d4")
+    ui.kpi(cols[1], "Thu nhập được duyệt", vnd(k["approved"]), "Đã được xác nhận sẽ trả")
+    ui.kpi(cols[2], "Còn chờ thanh toán", vnd(k["waiting"]), "Đã duyệt, tiền chưa về")
+    ui.kpi(cols[3], "Chờ đối soát", vnd(k["unreconciled"]), "Nền tảng báo đã trả, chưa khớp sao kê")
     ui.kpi(cols[4], "Tiền đã thực nhận", vnd(k["received"]), "Đã khớp với sao kê ngân hàng", "#10b981",
            ui.pct_change(k["received"], kp["received"]) if kp else None)
-    st.caption("ℹ️ Đây là các **lát cắt khác nhau của cùng một dòng tiền**, không cộng với nhau: "
-               "tiền đã nhận nằm trong khoản đã duyệt, khoản đã duyệt nằm trong doanh thu phát sinh.")
+    st.caption("Lưu ý: các số trên là các bước của **cùng một dòng tiền**, **không cộng với nhau**.")
     if k["overdue"] > 0:
-        st.warning(f"Có khoản **trễ hạn** tổng {vnd(k['overdue'])} trong bộ lọc này.", icon="🚨")
+        st.warning(f"Có khoản **trễ hạn** tổng {vnd(k['overdue'])}. Bấm *Xử lý* ở mục Việc cần làm bên dưới.", icon="🚨")
 
-    left, right = st.columns([3, 2])
+    # 2) Biểu đồ chính + việc cần làm
+    left, right = st.columns([2.3, 1])
     with left:
+        ui.section("Biểu đồ thu nhập")
+        cc = st.columns([2, 4], vertical_alignment="bottom")
+        metric = cc[0].selectbox("Chỉ số", sv.METRICS, key="d_metric")
+        group = cc[1].segmented_control("Xem theo", GROUPS, default="Tháng", key="d_group",
+                                        format_func=lambda g: "Nguồn" if g == "Nguồn thu" else g) or "Tháng"
+        kind = "Cột"
+        if df.empty:
+            ui.empty_chart_note()
+        else:
+            ui.main_chart(df, metric, group, kind, True)
+    with right:
+        ui.section("Việc cần làm", "Bấm Xử lý để tới đúng trang")
+        todo_panel(df_all)
+
+    # 3) Hành trình dòng tiền + dòng tiền dự kiến
+    a, b = st.columns(2)
+    with a:
         ui.section("Hành trình dòng tiền", "Từ lúc phát sinh đến khi tiền thật sự về tài khoản")
         ui.funnel([("1. Doanh thu phát sinh", k["generated"], "#6366f1"),
                    ("2. Được duyệt", k["approved"], "#3b82f6"),
                    ("3. Đã thanh toán (nền tảng báo)", k["paid"], "#06b6d4"),
                    ("4. Thực nhận (đã đối soát)", k["received"], "#10b981")])
-    with right:
-        ui.section("Việc cần làm", "Bấm để chuyển tới đúng trang xử lý")
-        todo_panel(df_all)
+    with b:
+        ui.section("Tiền dự kiến về", "Theo hạn thanh toán của các khoản đang chờ")
+        cashflow_chart(df)
 
-    ui.section("Biểu đồ theo bộ lọc")
-    if df.empty:
-        ui.empty_chart_note()
-    else:
-        ui.main_chart(df, metric, group, kind, split)
-        a, b = st.columns(2)
-        with a:
-            ui.share_chart(df, metric)
-        with b:
-            cashflow_chart(df)
-
+    # 4) Bảng gọn
     ui.section("Khoản sắp đến hạn / đã trễ hạn")
     due = df[df["status"].isin(db.WAITING_PAY_SET)].copy() if not df.empty else df
     if due.empty:
         st.success("Không có khoản nào đang chờ thanh toán.", icon="🎉")
     else:
-        due = due.sort_values("expected_pay_date").head(8)
+        due = due.sort_values("expected_pay_date").head(5)
         ui.income_table(due, "dash_due")
 
 
@@ -266,15 +284,8 @@ def page_sources():
                          "Đã thực nhận (đ)": float(live["received_amount"].sum()) if len(live) else 0.0})
         tbl = pd.DataFrame(rows)
         money = st.column_config.NumberColumn(format="localized")
-        a, b = st.columns([3, 2])
-        a.dataframe(tbl, hide_index=True, column_config={"Tổng doanh thu (đ)": money, "Đã thực nhận (đ)": money})
-        if tbl["Tổng doanh thu (đ)"].sum() > 0:
-            g = tbl.melt(id_vars="Nguồn", value_vars=["Tổng doanh thu (đ)", "Đã thực nhận (đ)"], var_name="Loại",
-                         value_name="v")
-            g["v"] = g["v"] / 1e6
-            fig = px.bar(g, x="Nguồn", y="v", color="Loại", barmode="group", color_discrete_sequence=["#6366f1", "#10b981"])
-            fig.update_traces(hovertemplate="%{x}<br><b>%{y:,.2f} triệu đồng</b><extra>%{fullData.name}</extra>")
-            b.plotly_chart(ui.style_fig(fig, "Doanh thu và tiền thực nhận theo nguồn"))
+        st.dataframe(tbl.drop(columns=["Điều kiện nhận tiền"]), hide_index=True,
+                     column_config={"Tổng doanh thu (đ)": money, "Đã thực nhận (đ)": money})
     else:
         st.info("Chưa có nguồn thu nào. Hãy thêm nguồn đầu tiên ở tab bên dưới.", icon="👋")
 
@@ -349,15 +360,17 @@ def incomes_list(df):
     if df.empty:
         st.info("Chưa có khoản thu nào. Sang tab **➕ Thêm khoản thu** hoặc **⬇️ Nhập từ API / file**.", icon="📭")
         return
-    with st.container(border=True):
-        c = st.columns([2, 1.6, 1.6, 1.3])
-        q = c[0].text_input("🔎 Tìm theo mã hoặc nội dung", key="l_q", placeholder="VD: YT001 hoặc 'logo'")
-        fs = c[1].multiselect("🗂️ Nguồn", sorted(df["source"].unique()), key="l_src", placeholder="Tất cả")
-        fst = c[2].multiselect("🏷️ Trạng thái", list(STATUS_LABEL), format_func=status_txt, key="l_st",
-                               placeholder="Tất cả")
-        sort = c[3].selectbox("↕️ Sắp xếp", ["Mới nhất", "Số tiền giảm dần", "Hạn thanh toán gần nhất"], key="l_sort")
-        c2 = st.columns([1.3, 3])
+    c = st.columns([3, 2, 2], vertical_alignment="center")
+    q = c[0].text_input("Tìm kiếm", key="l_q", placeholder="🔎 Tìm theo mã hoặc nội dung (VD: YT001)",
+                        label_visibility="collapsed")
+    fs = c[1].multiselect("Nguồn", sorted(df["source"].unique()), key="l_src", placeholder="Tất cả nguồn thu",
+                          label_visibility="collapsed")
+    fst = c[2].multiselect("Trạng thái", list(STATUS_LABEL), format_func=status_txt, key="l_st",
+                           placeholder="Tất cả trạng thái", label_visibility="collapsed")
+    with st.expander("Lọc thêm: kỳ xem, sắp xếp"):
+        c2 = st.columns([1.3, 1.3, 2])
         start, end = period_filter("l", c2)
+        sort = c2[1].selectbox("Sắp xếp", ["Mới nhất", "Số tiền giảm dần", "Hạn thanh toán gần nhất"], key="l_sort")
     f = sv.filter_df(df, start, end, fs, fst)
     if q.strip():
         m = (f["code"].str.contains(q.strip(), case=False, na=False, regex=False)
@@ -370,11 +383,8 @@ def incomes_list(df):
     else:
         f = f.sort_values(["generated_date", "id"], ascending=False)
     live = f[f["status"] != "CANCELLED"]
-    m = st.columns(4)
-    m[0].metric("Số khoản", len(f))
-    m[1].metric("Tổng số tiền", vnd(live["amount"].sum()))
-    m[2].metric("Đã thực nhận", vnd(live["received_amount"].sum()))
-    m[3].metric("Còn phải thu", vnd((live["amount"] - live["received_amount"]).sum()))
+    st.markdown(f"**{len(f)} khoản** · Tổng **{vnd(live['amount'].sum())}** · Đã nhận **{vnd(live['received_amount'].sum())}** · "
+                f"Còn phải thu **{vnd((live['amount'] - live['received_amount']).sum())}**")
     ev = ui.income_table(f, f"inc_tbl_{st.session_state.get('tbl_ver', 0)}", selectable=True)
     sel = ev.selection.rows if ev is not None else []
     if sel and sel[0] < len(f):
@@ -395,7 +405,7 @@ def income_detail(iid):
         c = st.columns(4)
         remaining = inc["amount"] - inc["received_amount"]
         ui.kpi(c[0], "Số tiền", vnd(inc["amount"]), "Giá trị khoản thu", "#6366f1")
-        ui.kpi(c[1], "Đã thực nhận", vnd(inc["received_amount"]), "Đã khớp sao kê", "#10b981")
+        ui.kpi(c[1], "Đã thực nhận", vnd(inc["received_amount"]), "Đã khớp sao kê", "#10b981" if inc["received_amount"] > 0 else None)
         ui.kpi(c[2], "Còn lại", vnd(max(remaining, 0)), "Chưa về tài khoản", "#f59e0b")
         exp = date.fromisoformat(inc["expected_pay_date"]).strftime("%d/%m/%Y") if inc["expected_pay_date"] else "-"
         ui.kpi(c[3], "Hạn dự kiến", exp, f"Phát sinh {date.fromisoformat(inc['generated_date']):%d/%m/%Y}", "#8b5cf6")
@@ -405,7 +415,7 @@ def income_detail(iid):
         t = st.tabs(["🕘 Lịch sử trạng thái", "✏️ Sửa thông tin", "🗑️ Xóa"])
         with t[0]:
             h = pd.DataFrame(db.history_of(iid))
-            h["from_status"] = h["from_status"].map(lambda s: status_txt(s) if s else "—")
+            h["from_status"] = h["from_status"].map(lambda s_: status_txt(s_) if isinstance(s_, str) and s_ else "—")
             h["to_status"] = h["to_status"].map(status_txt)
             st.dataframe(h[["changed_at", "from_status", "to_status", "note"]].rename(columns={
                 "changed_at": "Thời điểm", "from_status": "Từ", "to_status": "Sang", "note": "Ghi chú"}),
@@ -600,10 +610,11 @@ def page_payments():
         st.info("Chưa có khoản thu nào.", icon="📭")
         return
     df["remaining"] = df["amount"] - df["received_amount"]
-    with st.container(border=True):
-        c = st.columns([2, 1.5])
-        fs = c[0].multiselect("🗂️ Nguồn thu", sorted(df["source"].unique()), key="p_src", placeholder="Tất cả nguồn")
-        hz = c[1].selectbox("📆 Hạn thanh toán", ["Tất cả", "Đã quá hạn", "Trong 7 ngày tới", "Trong 30 ngày tới"], key="p_hz")
+    c = st.columns([3, 2], vertical_alignment="center")
+    fs = c[0].multiselect("Nguồn thu", sorted(df["source"].unique()), key="p_src", placeholder="Tất cả nguồn thu",
+                          label_visibility="collapsed")
+    hz = c[1].selectbox("Hạn thanh toán", ["Tất cả", "Đã quá hạn", "Trong 7 ngày tới", "Trong 30 ngày tới"], key="p_hz",
+                        format_func=lambda h: f"Hạn thanh toán: {h}", label_visibility="collapsed")
     f = df[df["source"].isin(fs)] if fs else df
     t0 = date.today().isoformat()
     if hz == "Đã quá hạn":
@@ -620,7 +631,8 @@ def page_payments():
     }
     cols = st.columns(len(groups))
     for col, (name, (d, color)) in zip(cols, groups.items()):
-        ui.kpi(col, name, f"{len(d)} khoản", f"Còn phải thu {vnd(d['remaining'].sum())}", color)
+        ui.kpi(col, name, f"{len(d)} khoản", f"Còn phải thu {vnd(d['remaining'].sum())}",
+               "#ef4444" if (color == "#ef4444" and len(d) > 0) else None)
     tabs = st.tabs(["🗓️ Lịch thanh toán dự kiến"] + list(groups))
     with tabs[0]:
         w = f[f["status"].isin(db.WAITING_PAY_SET) & (f["remaining"] > 0)].sort_values("expected_pay_date")
@@ -645,12 +657,11 @@ def page_payments():
                 st.success("Không có khoản nào trong nhóm này.", icon="🎉")
             else:
                 ui.income_table(d, f"pay_{name}")
-    st.divider()
-    ui.section("Cập nhật nhanh trạng thái", "Chọn một khoản rồi chuyển sang bước tiếp theo")
-    open_df = df[~df["status"].isin(["RECONCILED", "CANCELLED"])]
-    iid = pick_income(open_df, "pay_pick")
-    if iid:
-        status_actions(iid, f"pay_{iid}")
+    with st.expander("Cập nhật nhanh trạng thái một khoản"):
+        open_df = df[~df["status"].isin(["RECONCILED", "CANCELLED"])]
+        iid = pick_income(open_df, "pay_pick")
+        if iid:
+            status_actions(iid, f"pay_{iid}")
 
 
 # ---------- Trang: Đối soát ----------
@@ -665,8 +676,8 @@ def page_recon():
     c = st.columns(4)
     ui.kpi(c[0], "Giao dịch tiền vào", f"{n_all}", "Đã tải / nhập vào hệ thống", "#6366f1")
     ui.kpi(c[1], "Chờ đối soát", f"{n_wait}", "Chưa chạy đối soát", "#f59e0b")
-    ui.kpi(c[2], "Cần bạn kiểm tra", f"{n_rev}", "Thiếu tiền, trùng hoặc không khớp", "#ef4444")
-    ui.kpi(c[3], "Đã khớp", f"{n_ok}", "Đã ghi nhận thực nhận", "#10b981")
+    ui.kpi(c[2], "Cần bạn kiểm tra", f"{n_rev}", "Thiếu tiền, trùng hoặc không khớp", "#ef4444" if n_rev else None)
+    ui.kpi(c[3], "Đã khớp", f"{n_ok}", "Đã ghi nhận thực nhận", "#10b981" if n_ok else None)
     tabs = st.tabs(["1️⃣ Tải sao kê", "2️⃣ Đối soát tự động", f"3️⃣ Cần kiểm tra ({n_rev})", "📜 Lịch sử đối soát"])
 
     with tabs[0]:
@@ -733,8 +744,8 @@ def page_recon():
                 flash(str(e), "error")
             st.rerun()
         bd = sv.bank_df()
-        st.markdown(f"**Giao dịch đã có ({len(bd)})**")
         if not bd.empty:
+            st.markdown(f"**Giao dịch đã có ({len(bd)})**")
             lab = {"NEW": "⚪ Chưa đối soát", "MATCHED": "🟢 Đã ghép", "REVIEW": "🟠 Cần kiểm tra",
                    "UNMATCHED": "🔴 Không khớp", "IGNORED": "⚫ Đã bỏ qua"}
             show = pd.DataFrame({"#": bd["id"], "Ngày": pd.to_datetime(bd["txn_date"]), "Số tiền (đ)": bd["amount"],
@@ -837,23 +848,19 @@ def page_reports():
     if df_all.empty:
         st.info("Chưa có dữ liệu để lập báo cáo.", icon="📭")
         return
-    with st.container(border=True):
-        st.markdown("**🎛️ Bộ lọc báo cáo**")
-        c = st.columns([1.1, 1.8, 1.8])
-        period = c[0].selectbox("📅 Kỳ báo cáo", sv.PERIODS, key="r_period")
-        sources = c[1].multiselect("🗂️ Nguồn thu", sorted(df_all["source"].unique()), key="r_src", placeholder="Tất cả nguồn")
-        status_f = c[2].multiselect("🏷️ Trạng thái", list(STATUS_LABEL), format_func=status_txt, key="r_st",
-                                    placeholder="Tất cả trạng thái")
-        custom = None
-        if period == "Tùy chọn":
-            custom = st.date_input("Chọn khoảng ngày", (date.today() - timedelta(days=30), date.today()),
-                                   format="DD/MM/YYYY", key="r_custom")
-        c2 = st.columns([1.6, 1.2, 1, 1.4])
-        metric = c2[0].selectbox("📐 Chỉ số", sv.METRICS, key="r_metric")
-        gran = c2[1].selectbox("⏱️ Độ chi tiết", ["Tháng", "Tuần", "Ngày"], key="r_gran")
-        kind = c2[2].selectbox("📊 Kiểu", KINDS, key="r_kind")
-        c2[3].write("")
-        split = c2[3].toggle("Chia màu theo nguồn", value=True, key="r_split")
+    c = st.columns([3, 1.5, 2.2], vertical_alignment="center")
+    c[0].markdown('<div class="cf-asof">Bộ lọc áp dụng cho toàn bộ báo cáo bên dưới</div>', unsafe_allow_html=True)
+    period = c[1].selectbox("Kỳ báo cáo", sv.PERIODS, key="r_period", format_func=lambda p: f"Kỳ: {p}",
+                            label_visibility="collapsed")
+    sources = c[2].multiselect("Nguồn thu", sorted(df_all["source"].unique()), key="r_src",
+                               placeholder="Tất cả nguồn thu", label_visibility="collapsed")
+    custom = None
+    if period == "Tùy chọn":
+        custom = st.date_input("Chọn khoảng ngày", (date.today() - timedelta(days=30), date.today()),
+                               format="DD/MM/YYYY", key="r_custom")
+    with st.expander("Lọc thêm theo trạng thái"):
+        status_f = st.multiselect("Trạng thái", list(STATUS_LABEL), format_func=status_txt, key="r_st",
+                                  placeholder="Tất cả trạng thái")
     start, end = sv.period_range(period, custom)
     df = sv.filter_df(df_all, start, end, sources, status_f)
     if df.empty:
@@ -862,12 +869,17 @@ def page_reports():
     live = df[df["status"] != "CANCELLED"]
     k = sv.kpis(df)
     c = st.columns(4)
-    ui.kpi(c[0], "Doanh thu phát sinh", vnd(k["generated"]), f"{len(live)} khoản thu", "#6366f1")
-    ui.kpi(c[1], "Được duyệt", vnd(k["approved"]), "Đã xác nhận sẽ trả", "#3b82f6")
+    ui.kpi(c[0], "Doanh thu phát sinh", vnd(k["generated"]), f"{len(live)} khoản thu")
+    ui.kpi(c[1], "Được duyệt", vnd(k["approved"]), "Đã xác nhận sẽ trả")
     ui.kpi(c[2], "Đã thực nhận", vnd(k["received"]), "Đã khớp sao kê", "#10b981")
-    ui.kpi(c[3], "Còn chờ thanh toán", vnd(k["waiting"]), "Chưa về tài khoản", "#f59e0b")
+    ui.kpi(c[3], "Còn chờ thanh toán", vnd(k["waiting"]), "Chưa về tài khoản")
 
     ui.section("Xu hướng theo thời gian")
+    cc = st.columns([1.9, 2.2, 2, 1.6], vertical_alignment="bottom")
+    metric = cc[0].selectbox("Chỉ số", sv.METRICS, key="r_metric")
+    gran = cc[1].segmented_control("Độ chi tiết", ["Tháng", "Tuần", "Ngày"], default="Tháng", key="r_gran") or "Tháng"
+    kind = cc[2].segmented_control("Kiểu", KINDS, default="Cột", key="r_kind") or "Cột"
+    split = cc[3].toggle("Chia màu theo nguồn", value=True, key="r_split")
     ui.main_chart(df, metric, gran, kind, split)
     a, b = st.columns(2)
     with a:
@@ -887,8 +899,10 @@ def page_reports():
             st.plotly_chart(ui.style_fig(fig, f"Tăng trưởng {metric.lower()} theo tháng", unit="%"))
         else:
             st.info("Cần dữ liệu từ 2 tháng trở lên để tính tăng trưởng.", icon="ℹ️")
-        st.dataframe(tm[["x", "value", "Tăng trưởng (%)"]].rename(columns={"x": "Tháng", "value": "Giá trị (triệu đ)"}),
-                     hide_index=True)
+        tshow = tm[["x", "value", "Tăng trưởng (%)"]].copy()
+        tshow["value"] = tshow["value"].round(1)
+        tshow["Tăng trưởng (%)"] = tshow["Tăng trưởng (%)"].map(lambda v_: "—" if pd.isna(v_) else f"{v_:+.1f}%")
+        st.dataframe(tshow.rename(columns={"x": "Tháng", "value": "Giá trị (triệu đ)"}), hide_index=True)
     with r:
         d = live.dropna(subset=["paid_date", "expected_pay_date"]).copy()
         d["delay"] = (pd.to_datetime(d["paid_date"]) - pd.to_datetime(d["expected_pay_date"])).dt.days
@@ -898,10 +912,10 @@ def page_reports():
         if slow.empty:
             st.info("Chưa có dữ liệu về độ trễ thanh toán.", icon="ℹ️")
         else:
-            fig = px.bar(slow, x="source", y="delay", color="delay", color_continuous_scale=["#10b981", "#f59e0b", "#ef4444"],
-                         labels={"source": "", "delay": "Số ngày"})
+            slow["Mức"] = slow["delay"].map(lambda d_: "Đúng hạn / sớm" if d_ <= 0 else "Trễ nhẹ (1–7 ngày)" if d_ <= 7 else "Trễ nhiều (>7 ngày)")
+            fig = px.bar(slow, x="source", y="delay", color="Mức", labels={"source": "", "delay": "Số ngày"},
+                         color_discrete_map={"Đúng hạn / sớm": "#10b981", "Trễ nhẹ (1–7 ngày)": "#f59e0b", "Trễ nhiều (>7 ngày)": "#ef4444"})
             fig.update_traces(hovertemplate="%{x}<br><b>%{y:.1f} ngày</b> so với hạn dự kiến<extra></extra>")
-            fig.update_coloraxes(showscale=False)
             st.plotly_chart(ui.style_fig(fig, "Số ngày trễ trung bình so với hạn (âm = trả sớm)", unit="ngày"))
             st.dataframe(slow.rename(columns={"source": "Nguồn", "delay": "Số ngày trễ TB", "od": "Khoản đang trễ hạn"}).round(1),
                          hide_index=True)
@@ -942,18 +956,27 @@ Freelancer**) quản lý tập trung thu nhập từ nhiều nền tảng, theo 
 """)
     st.subheader("Vòng đời của một khoản thu")
     st.graphviz_chart("""
-digraph G { rankdir=LR; bgcolor="transparent";
- node [shape=box, style="rounded,filled", fillcolor="#eef2ff", color="#6366f1", fontname="Arial", fontsize=11];
+digraph G { rankdir=LR; bgcolor="transparent"; nodesep=0.35; ranksep=0.35;
+ node [shape=box, style="rounded,filled", fillcolor="#eef2ff", color="#6366f1", fontname="Arial", fontsize=15, margin="0.2,0.12"];
  edge [color="#64748b"];
- A [label="Phát sinh\nGENERATED"]; B [label="Chờ xác nhận\nUNDER_REVIEW"]; C [label="Được duyệt\nAPPROVED"];
- D [label="Chờ thanh toán\nPENDING_PAYMENT"]; E [label="Đã thanh toán\nPAID_UNRECONCILED"];
- F [label="Đã nhận & đối soát\nRECONCILED", fillcolor="#d1fae5", color="#10b981"];
+ A [label="Phát sinh"]; B [label="Chờ xác nhận"]; C [label="Được duyệt"]; D [label="Chờ thanh toán"];
+ E [label="Nền tảng báo\nđã trả"]; F [label="Đã nhận\n& đối soát", fillcolor="#d1fae5", color="#10b981"];
  X [label="Trễ hạn / Một phần /\nTranh chấp / Hủy", fillcolor="#fee2e2", color="#ef4444"];
  A -> B -> C -> D -> E -> F; A -> C; D -> X; E -> X [style=dashed]; }
 """)
+    st.subheader("Các từ bạn sẽ gặp trong hệ thống")
+    st.table(pd.DataFrame([
+        ["Phát sinh", "Bạn vừa kiếm được một khoản, đã ghi vào hệ thống."],
+        ["Được duyệt", "Nền tảng hoặc khách hàng đã xác nhận sẽ trả khoản này."],
+        ["Chờ thanh toán", "Đã duyệt, đang chờ họ chuyển tiền theo hạn."],
+        ["Chờ đối soát", "Nền tảng báo đã chuyển, nhưng bạn chưa kiểm tra sao kê ngân hàng."],
+        ["Đối soát", "So khớp khoản thu với giao dịch trên sao kê để chắc chắn tiền đã về."],
+        ["Đã nhận & đối soát", "Tiền đã về tài khoản và khớp với sao kê. Đây mới là tiền thực nhận."],
+        ["Trễ hạn", "Đã quá ngày dự kiến mà tiền chưa về."],
+    ], columns=["Từ", "Nghĩa là gì"]).set_index("Từ"))
     c = st.columns(2)
     with c[0]:
-        st.subheader("4 nghiệp vụ Fintech")
+        st.subheader("Hệ thống giúp bạn 4 việc")
         st.markdown("""
 1. **Tổng hợp & chuẩn hóa** dữ liệu thu nhập (API giả lập + Excel/CSV; mỗi nền tảng một tên trường, một đơn vị).
 2. **Quản lý công nợ phải thu** và trạng thái thanh toán, có lịch sử thay đổi.
